@@ -28,8 +28,10 @@ def cli_argument_parser():
     parser.add_argument("--matte_softness", type=float, default=0.2, help="Ширина зоны растушевки (default: 0.2)")
     parser.add_argument("--noise_amount", type=float, default=0.05, help="Уровень шума для scratches (default: 0.05)")
     parser.add_argument("--scratches_count", type=int, default=7, help="Число царапин для scratches (default: 7)")
-    parser.add_argument("--neon_gain", type=int, default=1, help="Усиление контуров для неона (default: 1)")
-
+    parser.add_argument("--neon_gain", type=int, default=1, help="Насколько выражена граница. Чем больше число, тем более выраженная она должна быть в исходном изображении (default: 40)")
+    parser.add_argument("--neon_brightness", type=float, default=1, help="Яркость свечения размытия неона(default: 0.8)")
+    parser.add_argument("--neon_brightness_width", type=int, default=1, help="Насколько далеко цвет расходится от контура (default: 10)")
+    parser.add_argument("--edge_thickness", type=int, default=1, help="Сколько раз применить дилатацию (default: 1)")
 
 
     args = parser.parse_args()
@@ -44,7 +46,10 @@ def cli_argument_parser():
         "infrared-strength": args.infrared_strength,
         "matte_radius": args.matte_radius,
         "matte_softness": args.matte_softness,
-        "neon_gain": args.neon_gain
+        "neon_gain": args.neon_gain,
+        "neon_brightness": args.neon_brightness,
+        "neon_brightness_width": args.neon_brightness_width,
+        "edge_thickness": args.edge_thickness
     }
 
     return args.input, args.output, args.flag, params

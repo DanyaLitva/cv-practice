@@ -209,37 +209,88 @@ class AgedPhoto(ImageFilter):
 
 class NeonEffect(ImageFilter):
     def apply_filter(self, image):
-        gain = float(self.params.get("neon_gain", 1.0))
-        if gain <= 0:
-            raise ValueError(f"neon_gain должен быть > 0, получено: {gain}")
 
-        if image.ndim == 2:
-            image = np.stack([image] * 3, axis=-1)
+        neon_gain = float(self.params.get("neon_gain", 40.0)) # насколько выражена граница? чем больше число, тем более выраженная она должна быть в исходном изображении
+        neon_brightness = float(self.params.get("neon_brightness", 0.8)) # яркость свечения размытия неона
+        neon_brightness_width = int(self.params.get("neon_brightness_width", 10)) # насколько далеко цвет расходится от контура
+        edge_thickness = int(self.params.get("edge_thickness", 1)) # сколько раз применить дилатацию
+
+        color_param = self.params.get("color", (255, 0, 139)) # фиолетовый неон!
+        cb, cg, cr = map(float, color_param)
+
+        # проверка значений параметров
+        if neon_gain <= 0:
+            raise ValueError(f"neon_gain должен быть > 0, получено: {neon_gain}")
+        if neon_brightness < 0:
+            raise ValueError(f"neon_brightness должен быть >= 0, получено: {neon_brightness}")
+        if neon_brightness_width < 1:
+            raise ValueError(f"neon_brightness_width должен быть >= 1, получено: {neon_brightness_width}")
+        if edge_thickness < 0:
+            raise ValueError(f"edge_thickness должен быть >= 0, получено: {edge_thickness}")
 
         img = image.astype(np.float32)
+        h, w = img.shape[:2]
+        # делаем изображение серым
+        gray_img = RGB2GrayScale().apply_filter(img)
+        gray = gray_img[..., 0].astype(np.float32) # берем 0-вой канал, т.к. они все одинаковые
 
-        # Делаем изображение серым, чтобы найти границы яркости.
-        gray = 0.114 * img[..., 0] + 0.587 * img[..., 1] + 0.299 * img[..., 2]
-
-        # Ядра Собеля, чтобы определить места резкого изменения яркости.
+        # ядра оператора Собеля
         Kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
         Ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
 
-        # Добавляем шаблон на каждый пиксель
-        h, w = gray.shape
+        # что?
         pad = np.pad(gray, 1, mode="edge")
         gx = np.zeros_like(gray)
         gy = np.zeros_like(gray)
+
         for dy in range(3):
             for dx in range(3):
                 gx += Kx[dy, dx] * pad[dy:dy+h, dx:dx+w]
                 gy += Ky[dy, dx] * pad[dy:dy+h, dx:dx+w]
+        
+        magnitude = np.sqrt(gx * gx + gy * gy) # степень изменения яркости
+        
+        # mask - те точки, которые станут неоновыми
+        mask = (magnitude > neon_gain).astype(np.float32)
 
-        magnitude = np.sqrt(gx**2 + gy**2)
-        magnitude = np.clip(magnitude * gain, 0, 255)
+        # дилатация - значение элемента меняется на максимум из окрестности
+        for _ in range(edge_thickness):
+            out_dilated = mask.copy()
+            out_dilated[1:, :] = np.maximum(out_dilated[1:, :], mask[:-1, :])
+            out_dilated[:-1, :] = np.maximum(out_dilated[:-1, :], mask[1:, :])
+            out_dilated[:, 1:] = np.maximum(out_dilated[:, 1:], mask[:, :-1])
+            out_dilated[:, :-1] = np.maximum(out_dilated[:, :-1], mask[:, 1:])
+            mask = out_dilated
 
-        out = img.copy()
-        out[..., 0] += magnitude   # B
-        out[..., 1] += magnitude   # G
+
+        # размытие неона по контурам
+        sigma = max(1.0, float(neon_brightness_width)) # насколько далеко цвет расходится от контура
+        neon_brightness_mask = mask * 0.4 # сделали маску более тусклой, чтобы потом засветить в цикле
+        current = mask
+        radius = max(1, int(sigma * 3))
+
+        for r in range(1, radius + 1): # еще radius дилатаций
+            current_dilated = current.copy()
+            current_dilated[1:, :] = np.maximum(current_dilated[1:, :], current[:-1, :])
+            current_dilated[:-1, :] = np.maximum(current_dilated[:-1, :], current[1:, :])
+            current_dilated[:, 1:] = np.maximum(current_dilated[:, 1:], current[:, :-1])
+            current_dilated[:, :-1] = np.maximum(current_dilated[:, :-1], current[:, 1:])
+            current = current_dilated
+
+            weight = np.exp(-(r * r) / (2 * sigma * sigma)) * 0.4 # чем больше r, тем меньше коэффициент weight
+            neon_brightness_mask = np.maximum(neon_brightness_mask, current * weight)
+
+
+        edges = np.zeros_like(img)
+        edges[..., 0] = mask * cb
+        edges[..., 1] = mask * cg
+        edges[..., 2] = mask * cr
+
+        neon_layer = np.zeros_like(img)
+        neon_layer[..., 0] = neon_brightness_mask * cb
+        neon_layer[..., 1] = neon_brightness_mask * cg
+        neon_layer[..., 2] = neon_brightness_mask * cr
+
+        out = img + edges + neon_layer * neon_brightness
 
         return np.clip(out, 0, 255).astype(np.uint8)
