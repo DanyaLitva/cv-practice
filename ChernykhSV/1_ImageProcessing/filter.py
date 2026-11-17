@@ -81,23 +81,38 @@ class RGB2GrayScale(ImageFilter):
 
 
 class Antique(ImageFilter):
-    
+
     def apply_filter(self, image):
         sepia = float(self.params.get("sepia", 0.7))
         sepia = max(0.0, min(1.0, sepia))   # ограничиваем 0..1
 
-        b = image[:, :, 0]
-        g = image[:, :, 1]
-        r = image[:, :, 2]
-        
+        if image.ndim == 2:
+            image = np.stack([image] * 3, axis=-1)
+
+        b = image[:, :, 0].astype(np.float32)
+        g = image[:, :, 1].astype(np.float32)
+        r = image[:, :, 2].astype(np.float32)
+
         sepia_r = 0.393 * r + 0.769 * g + 0.189 * b
         sepia_g = 0.349 * r + 0.686 * g + 0.168 * b
         sepia_b = 0.272 * r + 0.534 * g + 0.131 * b
 
-        sepia_bgr = np.stack([sepia_b, sepia_g, sepia_r], axis=-1) # [sepia_b, sepia_g, sepia_r]
+        sepia_bgr = np.stack([sepia_b, sepia_g, sepia_r], axis=-1)  # [B, G, R]
 
         original = image.astype(np.float32)
         out = original * (1.0 - sepia) + sepia_bgr * sepia
+
+        # виньетка: затемнение по краям изображения
+        h, w = out.shape[:2]
+        yy = np.arange(h, dtype=np.float32)[:, None]
+        xx = np.arange(w, dtype=np.float32)[None, :]
+        cx, cy = (w - 1) / 2.0, (h - 1) / 2.0 # центр изображения
+        max_dist = np.sqrt(cx ** 2 + cy ** 2) # для нормировки дистанции 0..1
+        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / max_dist  # 0 в центре, 1 в углу
+
+        mask = 1.0 - dist ** 2
+        out *= mask[..., None]
+
         return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -182,28 +197,46 @@ class AgedPhoto(ImageFilter):
         if not 0 <= scratches <= 50:
             raise ValueError(f"scratches должен быть в [0, 50], получено: {scratches}")
 
-        if image.ndim == 2:
-            image = np.stack([image] * 3, axis=-1)
-
         res = image.astype(np.float32)
         h, w = res.shape[:2]
 
-        if noise > 0:
+        if noise > 0: # добавляем шум - нормально распределение: среднее 0, ширина колокола, форма выходного массива
             res += np.random.normal(0, noise * 255, (h, w, 1)).astype(np.float32)
 
         for _ in range(scratches):
-            x_start = np.random.randint(0, w)
-            y_start = np.random.randint(0, h // 2)
+            # разнообразный наклон дубинок
+            angle = np.clip(np.random.normal(0.0, np.pi / 6), -np.pi / 3, np.pi / 3)
+
             length = np.random.randint(h // 4, h)
-            slope = np.random.uniform(-0.03, 0.03)
-            for dy in range(length):
-                y = y_start + dy
-                if y >= h:
-                    break
-                xx = int(x_start + slope * dy)
-                if 0 <= xx < w:
-                    # смешивание с белым на 15%
-                    res[y, xx] = res[y, xx] * 0.85 + 255 * 0.15
+            x0 = np.random.uniform(-0.1 * w, 1.1 * w)
+            y0 = np.random.uniform(-0.1 * h, h // 2)
+
+            t = np.arange(length, dtype=np.float32) # пикселей в царапине
+            # плавное искривление вдоль царапины
+            drift = np.cumsum(np.random.normal(0.0, 0.002, length)).astype(np.float32) # делаем царапину волнистой
+
+            xs = (x0 + t * np.sin(angle) + drift * np.cos(angle)).astype(np.intp) # идем вдоль угла angle и добавляем перпендикулярный сдвиг drift
+            ys = (y0 + t * np.cos(angle) - drift * np.sin(angle)).astype(np.intp)
+
+            inside = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w) # если точки не лежат внутри картинки, то отсекаем их
+            ys, xs, t_in = ys[inside], xs[inside], t[inside]
+
+            if len(t_in) == 0: # если царапина за кадром, то пропускаем итерацию
+                continue
+
+            # делаем царапину не сплошной
+            keep = np.random.random(len(t_in)) > 0.15
+            ys, xs, t_in = ys[keep], xs[keep], t_in[keep]
+
+            if len(t_in) == 0: # если после прореживания ничего не осталось
+                continue
+
+            
+            freq = np.random.uniform(0.02, 0.08) # равномерное распределение - частота пульсации
+            phase = np.random.uniform(0.0, 2 * np.pi) # фаза пульсации
+            alpha = 0.30 * (0.6 + 0.4 * np.sin(t_in * freq + phase)) # интенсивность пикселя t_in на царапине
+
+            res[ys, xs] = res[ys, xs] * (1 - alpha[:, None]) + 255 * alpha[:, None]
 
         return np.clip(res, 0, 255).astype(np.uint8)
 
@@ -238,7 +271,7 @@ class NeonEffect(ImageFilter):
         Kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
         Ky = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
 
-        # что?
+        # расширяем картинку для применения оператора собеля
         pad = np.pad(gray, 1, mode="edge")
         gx = np.zeros_like(gray)
         gy = np.zeros_like(gray)
